@@ -19,6 +19,7 @@ vi.mock('../../core/model-registry.ts', () => ({
   MAX_FUSION_PANEL: 8,
   REASONING_EFFORTS: ['minimal', 'low', 'medium', 'high', 'xhigh'],
   GENERATION_PATH_MODES: ['versioned', 'direct'],
+  TOOL_CALL_PARSERS: ['glm'],
   findProvider: (reg: typeof state.reg, id: string) => reg.providers.find((p) => p.id === id),
   findModel: (reg: typeof state.reg, id: string, providerId?: string) =>
     reg.models.find(

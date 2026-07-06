@@ -14,6 +14,7 @@ import {
   type ProviderEntry,
   REASONING_EFFORTS,
   type ReasoningEffort,
+  TOOL_CALL_PARSERS,
 } from '../../core/model-registry.ts'
 import { DAEMON_BASE_URL } from '../../core/paths.ts'
 import type {
@@ -402,6 +403,7 @@ type ProviderAddOpts = {
   key?: string
   generationPath?: string
   reasoningEffort?: string
+  toolCallParser?: string
 }
 
 const providerAdd = new Command('add')
@@ -421,6 +423,11 @@ const providerAdd = new Command('add')
     '--reasoning-effort <effort>',
     `provider default reasoning effort: ${REASONING_EFFORTS.join(' | ')}`,
   )
+  .option(
+    '--tool-call-parser <dialect>',
+    `parse in-content tool calls this endpoint emits instead of native calls ` +
+      `(afw's --tool-call-parser, e.g. a GLM/vLLM glm47 endpoint): ${TOOL_CALL_PARSERS.join(' | ')}`,
+  )
   .action((id: string, opts: ProviderAddOpts) =>
     run(async () => {
       if (!MODEL_APIS.includes(opts.api as ModelApi)) {
@@ -431,6 +438,9 @@ const providerAdd = new Command('add')
       }
       if (opts.auth === 'api-key' && !opts.header) {
         return fail('--header is required for api-key auth')
+      }
+      if (opts.toolCallParser != null && !TOOL_CALL_PARSERS.includes(opts.toolCallParser as never)) {
+        return fail(`--tool-call-parser must be one of ${TOOL_CALL_PARSERS.join(', ')}`)
       }
       const generationPath = normalizeGenerationPathFlag(opts.generationPath)
       if (opts.generationPath != null && !generationPath) {
@@ -459,6 +469,7 @@ const providerAdd = new Command('add')
         ...(apiKey ? { apiKey } : {}),
         ...(generationPath ? { generationPath } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(opts.toolCallParser ? { toolCallParser: opts.toolCallParser } : {}),
       })
       logger.print(`✓ provider ${id} registered`)
     }),
@@ -484,8 +495,9 @@ const providerList = new Command('list').description('List registered providers.
     for (const p of reg.providers) {
       const path = `path=${p.generationPath ?? 'versioned'}`
       const effort = p.reasoningEffort ? ` effort=${p.reasoningEffort}` : ''
+      const parser = p.toolCallParser ? ` tool-parser=${p.toolCallParser}` : ''
       logger.print(
-        `  ${p.id.padEnd(20)} ${p.api.padEnd(20)} ${path.padEnd(14)}${effort.padEnd(14)} ${p.auth.kind.padEnd(12)} ${p.origin.padEnd(8)} ${p.baseUrl}`,
+        `  ${p.id.padEnd(20)} ${p.api.padEnd(20)} ${path.padEnd(14)}${effort.padEnd(14)} ${p.auth.kind.padEnd(12)} ${p.origin.padEnd(8)}${parser} ${p.baseUrl}`,
       )
     }
   }),

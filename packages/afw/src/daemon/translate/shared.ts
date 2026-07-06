@@ -46,6 +46,76 @@ export function stringifyToolArgs(input: unknown): string {
   }
 }
 
+// ── freeform (OpenAI `custom`) tools ──────────────────────────────
+//
+// A `custom` tool (codex's `apply_patch`) is called with a single raw-text
+// payload, not JSON arguments — often carrying a Lark grammar. Routed models
+// that only speak JSON/native tool calls can't express that, so afw exposes a
+// freeform tool as an ordinary function with one `input` string arg (the whole
+// payload verbatim) and folds the grammar into the description. The response
+// side turns the model's `{input: "…"}` call back into the `custom_tool_call`
+// the client registered.
+
+export const FREEFORM_ARG = 'input'
+
+/** The function-tool schema a freeform tool is exposed as: one required
+ *  `input` string carrying the entire payload verbatim. */
+export function freeformFunctionSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      [FREEFORM_ARG]: {
+        type: 'string',
+        description: 'The complete tool payload, verbatim — a raw string, not wrapped in JSON.',
+      },
+    },
+    required: [FREEFORM_ARG],
+  }
+}
+
+/** The JSON schema to advertise for an IR tool: freeform tools get the
+ *  single-`input`-string schema; everything else keeps its own. */
+export function effectiveToolSchema(t: {
+  freeform?: boolean
+  inputSchema: unknown
+}): unknown {
+  return t.freeform ? freeformFunctionSchema() : (t.inputSchema ?? { type: 'object' })
+}
+
+/** The description to advertise for an IR tool: freeform tools get their
+ *  original description plus an explicit instruction to place the entire
+ *  payload in `input`, plus the Lark grammar when present. */
+export function effectiveToolDescription(t: {
+  freeform?: boolean
+  grammar?: string
+  description?: string
+}): string | undefined {
+  if (!t.freeform) return t.description
+  const parts = [t.description ?? '']
+  parts.push(
+    `This tool takes one argument, \`${FREEFORM_ARG}\`: a string holding the ENTIRE tool ` +
+      'payload verbatim. Do not wrap the payload in JSON or split it across fields.',
+  )
+  if (t.grammar) parts.push(`The \`${FREEFORM_ARG}\` string must follow this Lark grammar:\n${t.grammar}`)
+  return parts.filter((p) => p.length > 0).join('\n\n')
+}
+
+/** Recover the raw freeform payload string from a tool-call input. The model
+ *  should have used `{input: "…"}`; tolerate a bare string or a stray key. */
+export function freeformInputText(input: unknown): string {
+  if (typeof input === 'string') return input
+  if (input && typeof input === 'object') {
+    const o = input as Record<string, unknown>
+    const keys = Object.keys(o)
+    if (keys.length === 0) return ''
+    if (typeof o[FREEFORM_ARG] === 'string') return o[FREEFORM_ARG] as string
+    // A freeform call carries one payload; whatever key the model invented for
+    // it (GLM tends to echo the grammar field name), take that single value.
+    for (const v of Object.values(o)) if (typeof v === 'string') return v
+  }
+  return input == null ? '' : JSON.stringify(input)
+}
+
 // ── codex's `local_shell` built-in ────────────────────────────────
 //
 // Codex ships its shell capability as the OpenAI Responses *built-in*

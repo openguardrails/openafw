@@ -3,7 +3,10 @@
 // folds back into user/assistant turns. Response output is parsed by the same
 // `collectOutputBlocks` the Responses decoder already uses.
 
+import { nanoid } from 'nanoid'
+import type { NormalizedBlock } from '../../core/packet.ts'
 import { collectOutputBlocks } from '../decoders/openai/responses-sse.ts'
+import { extractInlineToolCallsXml } from './xml-tool-calls.ts'
 import {
   type IRBlock,
   type IRMessage,
@@ -14,9 +17,11 @@ import {
   urlToImageSource,
 } from './ir.ts'
 import {
+  FREEFORM_ARG,
   LOCAL_SHELL_SCHEMA,
   LOCAL_SHELL_TOOL,
   asObject,
+  freeformInputText,
   num,
   optNum,
   parseToolArgs,
@@ -36,7 +41,13 @@ export function requestToIR(body: unknown): IRRequest {
       const it = asObject(raw)
       if (it.type === 'function_call' || it.type === 'custom_tool_call') {
         // `custom_tool_call` is codex's freeform-tool call (e.g. apply_patch);
-        // its argument lives in `input` as a raw string rather than `arguments`.
+        // its payload lives in `input` as a raw string. Normalize it to the
+        // `{input: "…"}` shape the exposed function tool uses, so it serializes
+        // to the routed upstream as `arguments: {"input":"…"}`.
+        const input =
+          it.type === 'custom_tool_call'
+            ? { [FREEFORM_ARG]: freeformInputText(it.input ?? it.arguments) }
+            : parseToolArgs(it.arguments ?? it.input)
         messages.push({
           role: 'assistant',
           content: [
@@ -44,7 +55,7 @@ export function requestToIR(body: unknown): IRRequest {
               type: 'tool_use',
               id: str(it.call_id) ?? str(it.id) ?? '',
               name: str(it.name) ?? '',
-              input: parseToolArgs(it.arguments ?? it.input),
+              input,
             },
           ],
         })
@@ -99,10 +110,14 @@ export function requestToIR(body: unknown): IRRequest {
 export function responseToIR(json: unknown): IRResponse {
   const j = asObject(json)
   const usage = asObject(j.usage)
+  const { blocks, promoted } = promoteInlineXmlToolCalls(collectOutputBlocks(j.output))
   return {
     model: str(j.model) ?? '',
-    blocks: collectOutputBlocks(j.output),
-    stopReason: statusToStopReason(j),
+    blocks,
+    // A promoted XML tool call means the upstream reported `completed`
+    // (it emitted the call as plain text, not a native function_call), so
+    // carry the canonical tool-use stop reason instead of end_turn.
+    stopReason: promoted ? 'tool_use' : statusToStopReason(j),
     usage: {
       in: num(usage.input_tokens ?? usage.prompt_tokens),
       out: num(usage.output_tokens ?? usage.completion_tokens),
@@ -115,6 +130,48 @@ export function responseToIR(json: unknown): IRResponse {
 }
 
 // ── helpers ───────────────────────────────────────────────────────
+
+/** Some models routed behind a Responses endpoint emit tool calls as inline
+ *  XML inside an assistant text block (GLM `<tool_call>name<arg_key>…`,
+ *  Hermes `<tool_call>{json}`, Claude `<invoke>`) instead of a native
+ *  `function_call` output item. Promote those into real tool_use blocks so
+ *  the agent sees a tool call it can run, not inert text. Mirrors the same
+ *  recovery `from-openai-chat.ts` does on the chat path. */
+function promoteInlineXmlToolCalls(input: NormalizedBlock[]): {
+  blocks: NormalizedBlock[]
+  promoted: boolean
+} {
+  let promoted = false
+  const blocks: NormalizedBlock[] = []
+  for (const b of input) {
+    if (b.type !== 'text' || b.text.length === 0) {
+      blocks.push(b)
+      continue
+    }
+    const parsed = extractInlineToolCallsXml(b.text)
+    if (!parsed || parsed.toolUses.length === 0) {
+      blocks.push(b)
+      continue
+    }
+    promoted = true
+    if (parsed.cleanedText.length > 0) blocks.push({ type: 'text', text: parsed.cleanedText })
+    for (const tu of parsed.toolUses) {
+      blocks.push({
+        type: 'tool_use',
+        // XML formats carry no call id; synthesize a GLOBALLY unique one. A
+        // per-response counter (afw_xml_0, …) collides across turns — every
+        // turn's single call becomes `afw_xml_0`, so a long multi-turn history
+        // has one id shared by 100+ calls and the model can't tell its own
+        // actions apart (it thrashes). nanoid keeps each call distinct.
+        id: `afw_xml_${nanoid()}`,
+        name: tu.name,
+        input: tu.input,
+        ...(tu.rawJson ? { rawJson: tu.rawJson } : {}),
+      })
+    }
+  }
+  return { blocks, promoted }
+}
 
 function statusToStopReason(j: Record<string, unknown>): string | undefined {
   const status = str(j.status)
@@ -172,6 +229,23 @@ function toolsToIR(tools: unknown): IRTool[] | undefined {
           "Run a shell command on the user's machine and return its " +
           'stdout/stderr. Provide the command as an argv array.',
         inputSchema: LOCAL_SHELL_SCHEMA,
+      })
+      continue
+    }
+    // A `custom` tool (codex's apply_patch) is freeform: its call is a raw
+    // string following an optional Lark grammar, not JSON arguments. Preserve
+    // that so the serializers expose a single-`input` function to the routed
+    // model and the response side hands it back as a `custom_tool_call`.
+    if (t.type === 'custom') {
+      const nm = str(t.name)
+      if (!nm) continue
+      const format = asObject(t.format)
+      out.push({
+        name: nm,
+        description: str(t.description),
+        inputSchema: { type: 'object' },
+        freeform: true,
+        ...(str(format.definition) ? { grammar: str(format.definition) } : {}),
       })
       continue
     }

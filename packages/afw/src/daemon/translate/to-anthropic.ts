@@ -10,6 +10,7 @@ import {
   type IRRequest,
   type IRResponse,
 } from './ir.ts'
+import { effectiveToolDescription, effectiveToolSchema } from './shared.ts'
 
 export function requestFromIR(ir: IRRequest): unknown {
   const out: Record<string, unknown> = {
@@ -24,11 +25,14 @@ export function requestFromIR(ir: IRRequest): unknown {
   if (ir.system) out.system = ir.system
   if (ir.temperature != null) out.temperature = ir.temperature
   if (ir.tools && ir.tools.length > 0) {
-    out.tools = ir.tools.map((t) => ({
-      name: t.name,
-      ...(t.description ? { description: t.description } : {}),
-      input_schema: t.inputSchema ?? { type: 'object' },
-    }))
+    out.tools = ir.tools.map((t) => {
+      const description = effectiveToolDescription(t)
+      return {
+        name: t.name,
+        ...(description ? { description } : {}),
+        input_schema: effectiveToolSchema(t),
+      }
+    })
   }
   return out
 }

@@ -24,6 +24,7 @@ import {
   adaptForClaudeCodeOAuth,
   adaptForCodexBackend,
   applyOpenAIResponsesReasoning,
+  downgradeCustomToolCallsForResponses,
   isCodexChatGptBackend,
 } from '../translate/codex-compat.ts'
 import { type IRResponse, parseResponseToIR, translateRequest } from '../translate/index.ts'
@@ -623,6 +624,11 @@ async function buildUpstreamRequest(
     adaptForCodexBackend(upstreamBody, reasoningEffort)
   } else if (member.api === 'openai-responses') {
     applyOpenAIResponsesReasoning(upstreamBody, reasoningEffort)
+    // A toolCallParser (self-hosted vLLM) Responses endpoint can't ingest the
+    // `custom_tool_call` history afw hands the agent — downgrade it in place.
+    if (member.provider.toolCallParser) {
+      downgradeCustomToolCallsForResponses(upstreamBody)
+    }
   }
 
   // Shrink the output-token budget to fit the routed model's declared

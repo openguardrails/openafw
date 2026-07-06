@@ -13,7 +13,7 @@ import {
   imageSourceToUrl,
   openaiStopReason,
 } from './ir.ts'
-import { stringifyToolArgs } from './shared.ts'
+import { effectiveToolDescription, effectiveToolSchema, stringifyToolArgs } from './shared.ts'
 
 export function requestFromIR(ir: IRRequest): unknown {
   const messages: unknown[] = []
@@ -58,14 +58,17 @@ export function requestFromIR(ir: IRRequest): unknown {
   if (ir.maxTokens != null) out.max_tokens = ir.maxTokens
   if (ir.temperature != null) out.temperature = ir.temperature
   if (ir.tools && ir.tools.length > 0) {
-    out.tools = ir.tools.map((t) => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        ...(t.description ? { description: t.description } : {}),
-        parameters: t.inputSchema ?? { type: 'object' },
-      },
-    }))
+    out.tools = ir.tools.map((t) => {
+      const description = effectiveToolDescription(t)
+      return {
+        type: 'function',
+        function: {
+          name: t.name,
+          ...(description ? { description } : {}),
+          parameters: effectiveToolSchema(t),
+        },
+      }
+    })
   }
   // tool_choice round-trip. Anthropic → OpenAI mapping:
   //   auto       → "auto"

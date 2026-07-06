@@ -7,7 +7,14 @@
 
 import { nanoid } from 'nanoid'
 import { type IRBlock, type IRRequest, type IRResponse, imageSourceToUrl } from './ir.ts'
-import { LOCAL_SHELL_TOOL, inputToShellAction, stringifyToolArgs } from './shared.ts'
+import {
+  LOCAL_SHELL_TOOL,
+  effectiveToolDescription,
+  effectiveToolSchema,
+  freeformInputText,
+  inputToShellAction,
+  stringifyToolArgs,
+} from './shared.ts'
 
 export function requestFromIR(ir: IRRequest): unknown {
   const input: unknown[] = []
@@ -55,12 +62,15 @@ export function requestFromIR(ir: IRRequest): unknown {
   if (ir.maxTokens != null) out.max_output_tokens = ir.maxTokens
   if (ir.temperature != null) out.temperature = ir.temperature
   if (ir.tools && ir.tools.length > 0) {
-    out.tools = ir.tools.map((t) => ({
-      type: 'function',
-      name: t.name,
-      ...(t.description ? { description: t.description } : {}),
-      parameters: t.inputSchema ?? { type: 'object' },
-    }))
+    out.tools = ir.tools.map((t) => {
+      const description = effectiveToolDescription(t)
+      return {
+        type: 'function',
+        name: t.name,
+        ...(description ? { description } : {}),
+        parameters: effectiveToolSchema(t),
+      }
+    })
   }
   return out
 }
@@ -86,6 +96,18 @@ export function responseFromIR(ir: IRResponse): unknown {
         call_id: b.id || `call_${nanoid()}`,
         status: 'completed',
         action: inputToShellAction(b.input),
+      })
+    } else if (b.type === 'tool_use' && b.freeform) {
+      // The client registered this as a freeform `custom` tool — hand the
+      // call back as a `custom_tool_call` whose `input` is the raw payload,
+      // not a JSON-argument `function_call` it has no tool for.
+      output.push({
+        type: 'custom_tool_call',
+        id: `ctc_${nanoid()}`,
+        call_id: b.id || `call_${nanoid()}`,
+        name: b.name,
+        input: freeformInputText(b.input),
+        status: 'completed',
       })
     } else if (b.type === 'tool_use') {
       output.push({

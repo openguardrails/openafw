@@ -34,6 +34,21 @@ export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
  *    Responses as `/responses` rather than `/v1/responses`. */
 export type GenerationPathMode = 'versioned' | 'direct'
 
+/** Dialect for tool calls a provider emits as inline text in the assistant
+ *  message instead of native structured `tool_calls` / `function_call` items.
+ *  afw's analog of vLLM's `--tool-call-parser`: it tells afw which in-content
+ *  format to parse and promote, and forces the buffered route (an inline call
+ *  can't be reconstructed from live SSE deltas).
+ *
+ *  - `glm` — GLM-4.5/4.6/5.x served with vLLM `--tool-call-parser glm47`
+ *    (or an endpoint that leaks that format): `<tool_call>name<arg_key>k
+ *    </arg_key><arg_value>v</arg_value>…</tool_call>`. Also covers the
+ *    Hermes/Qwen JSON-in-`<tool_call>` and Claude `<invoke>` shapes, which
+ *    the same parser recognizes. */
+export type ToolCallParser = 'glm'
+
+export const TOOL_CALL_PARSERS: readonly ToolCallParser[] = ['glm'] as const
+
 export type ProviderAuth =
   // Inject a custom header (e.g. `x-api-key`) with a value from secrets.json.
   | { kind: 'api-key'; header: string; valueRef: string }
@@ -64,6 +79,13 @@ export type ProviderEntry = {
   reasoningEffort?: ReasoningEffort
   /** Optional endpoint path mode for gateways that do not use `/v1`. */
   generationPath?: GenerationPathMode
+  /** Set when this provider's model emits tool calls as inline text (e.g. a
+   *  GLM/vLLM endpoint that leaks the `glm47` format) instead of native
+   *  structured calls. Names the dialect to parse — afw's `--tool-call-parser`.
+   *  Forces the buffered route so the response is parsed and the inline call
+   *  promoted to a real tool call; a same-protocol stream would relay the raw
+   *  text and the agent would stop instead of running the tool. */
+  toolCallParser?: ToolCallParser
 }
 
 /** USD per million tokens, the display convention used across afw. */
@@ -242,6 +264,15 @@ function normalizeAuth(raw: unknown): ProviderAuth | undefined {
 function normalizeProvider(raw: unknown): ProviderEntry | undefined {
   if (!isObj(raw)) return undefined
   const { id, label, baseUrl, api, origin, seededFrom, reasoningEffort, generationPath } = raw
+  const rawObj = raw as Record<string, unknown>
+  // Back-compat: the old boolean `xmlToolCalls: true` means the GLM dialect.
+  const toolCallParser: ToolCallParser | undefined = TOOL_CALL_PARSERS.includes(
+    rawObj.toolCallParser as ToolCallParser,
+  )
+    ? (rawObj.toolCallParser as ToolCallParser)
+    : rawObj.xmlToolCalls === true
+      ? 'glm'
+      : undefined
   if (typeof id !== 'string' || id === '') return undefined
   if (typeof baseUrl !== 'string' || baseUrl === '') return undefined
   if (!MODEL_APIS.includes(api as ModelApi)) return undefined
@@ -261,6 +292,7 @@ function normalizeProvider(raw: unknown): ProviderEntry | undefined {
     ...(GENERATION_PATH_MODES.includes(generationPath as GenerationPathMode)
       ? { generationPath: generationPath as GenerationPathMode }
       : {}),
+    ...(toolCallParser ? { toolCallParser } : {}),
   }
 }
 

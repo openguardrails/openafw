@@ -157,6 +157,48 @@ export function applyOpenAIResponsesReasoning(
   return true
 }
 
+// ── self-hosted vLLM Responses backends ───────────────────────────
+
+/** vLLM's Responses API rebuilds chat history from the request `input` items
+ *  (`construct_chat_messages_with_tool_call`) and only handles `function_call`
+ *  / `function_call_output` — it has no case for `custom_tool_call` /
+ *  `custom_tool_call_output`, so it returns the raw item and the next
+ *  iteration crashes on `prev_msg.get(...)`. When afw promotes a routed model's
+ *  inline tool call into a `custom_tool_call` (so the agent that registered a
+ *  freeform tool accepts it), the agent echoes that item back on the next turn
+ *  — which would kill the vLLM endpoint. Downgrade those echoed history items
+ *  to the `function_call` shapes vLLM does handle. The freeform tool itself is
+ *  left untouched (the model calls it fine); only the history is rewritten. */
+export function downgradeCustomToolCallsForResponses(body: Record<string, unknown>): void {
+  const input = body.input
+  if (!Array.isArray(input)) return
+  let changed = false
+  const rewritten = input.map((raw) => {
+    if (!raw || typeof raw !== 'object') return raw
+    const it = raw as Record<string, unknown>
+    if (it.type === 'custom_tool_call') {
+      changed = true
+      const payload = typeof it.input === 'string' ? it.input : JSON.stringify(it.input ?? '')
+      return {
+        type: 'function_call',
+        call_id: it.call_id ?? it.id,
+        name: it.name,
+        arguments: JSON.stringify({ input: payload }),
+      }
+    }
+    if (it.type === 'custom_tool_call_output') {
+      changed = true
+      return {
+        type: 'function_call_output',
+        call_id: it.call_id ?? it.id,
+        output: it.output ?? it.content,
+      }
+    }
+    return raw
+  })
+  if (changed) body.input = rewritten
+}
+
 // ── anthropic claude-code subscription ────────────────────────────
 
 /** Anthropic's Messages thinking-budget tiers mapped from our shared

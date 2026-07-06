@@ -24,6 +24,8 @@ import {
   type ProviderEntry,
   REASONING_EFFORTS,
   type ReasoningEffort,
+  TOOL_CALL_PARSERS,
+  type ToolCallParser,
   findCombo,
   findModel,
   findProvider,
@@ -201,6 +203,11 @@ export async function handlePostProvider(c: Context): Promise<Response> {
     origin: 'manual',
     ...(generationPath ? { generationPath } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(TOOL_CALL_PARSERS.includes(body.toolCallParser as ToolCallParser)
+      ? { toolCallParser: body.toolCallParser as ToolCallParser }
+      : body.xmlToolCalls === true
+        ? { toolCallParser: 'glm' as const }
+        : {}),
   }
 
   const reg = await mutateModelRegistry((r) => ({

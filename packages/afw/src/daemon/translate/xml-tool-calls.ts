@@ -24,6 +24,15 @@
 //        </invoke>
 //      </function_calls>
 //
+// 3) GLM / ChatGLM style — the tool name is bare text right after the
+//    <tool_call> open, then alternating <arg_key>/<arg_value> pairs
+//    (no JSON, no name= attribute):
+//
+//      <tool_call>apply_patch
+//        <arg_key>file</arg_key><arg_value>/tmp/x</arg_value>
+//        <arg_key>content</arg_key><arg_value># hi</arg_value>
+//      </tool_call>
+//
 // Either format is tolerated even when malformed (missing wrappers,
 // duplicated open tags, empty wrappers) — better to surface zero
 // tool_uses + cleaned text than leak raw XML to the agent.
@@ -49,15 +58,22 @@ const ANY_TAG_RE = /<(?:tool_calls?|toolcalls?|function_calls|invoke|tool_call|t
 /** Run whichever parser the text shape matches. Returns null when no
  *  XML tool-call markup is present (caller treats the text as plain
  *  assistant content). Order of attempt:
- *    1. Hermes JSON-in-<tool_call> — strictest, most common with Qwen.
- *    2. Anthropic well-formed <invoke> blocks — strict closing required.
- *    3. Tolerant fallback — handles malformed / unterminated / mistagged
+ *    1. GLM <arg_key>/<arg_value> — checked first because a GLM call is
+ *       wrapped in the same <tool_call> tag Hermes matches, but its body
+ *       is bare-text-name + arg pairs (not JSON), so Hermes would strip
+ *       the wrapper and yield zero calls.
+ *    2. Hermes JSON-in-<tool_call> — strictest, most common with Qwen.
+ *    3. Anthropic well-formed <invoke> blocks — strict closing required.
+ *    4. Tolerant fallback — handles malformed / unterminated / mistagged
  *       calls (e.g. <tool_call name="x"><parameter>v</parameter> with
  *       no closing </tool_call>, duplicated openings, <toolcall>
  *       misspelling). The fallback is the one real models keep
  *       triggering once they get confused, so it's the safety net. */
 export function extractInlineToolCallsXml(text: string): XmlToolCallParse | null {
   if (!ANY_TAG_RE.test(text)) return null
+
+  const glm = extractGlmArgKvToolCalls(text)
+  if (glm && glm.toolUses.length > 0) return glm
 
   const hermes = extractHermesToolCalls(text)
   if (hermes && hermes.toolUses.length > 0) return hermes
@@ -124,6 +140,60 @@ function parseHermesInner(
     input = rawArgs ?? {}
   }
   return { name: o.name, input, ...(rawJson ? { rawJson } : {}) }
+}
+
+// ── GLM / ChatGLM <arg_key>/<arg_value> ───────────────────────────
+
+const GLM_BLOCK_RE = /<tool_call>([\s\S]*?)<\/tool_call>/gi
+const GLM_PAIR_RE = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi
+
+/** A `<tool_call>` block is GLM-shaped (not Hermes) when its body is bare
+ *  text — a tool name followed by optional `<arg_key>/<arg_value>` pairs —
+ *  rather than a JSON object. `{`-leading bodies are left for the Hermes
+ *  parser. This also catches the degenerate `<tool_call>name</tool_call>`
+ *  (no args) a confused model emits, so it becomes a real (empty) tool call
+ *  the agent can error-and-retry on, not raw XML leaking into the transcript. */
+function isGlmBody(inner: string): boolean {
+  return !inner.trim().startsWith('{')
+}
+
+export function extractGlmArgKvToolCalls(text: string): XmlToolCallParse | null {
+  const toolUses: XmlToolCallParse['toolUses'] = []
+  let matchedGlmBlock = false
+  const blockRe = new RegExp(GLM_BLOCK_RE)
+  let block: RegExpExecArray | null
+  while ((block = blockRe.exec(text)) !== null) {
+    const inner = block[1] ?? ''
+    if (!isGlmBody(inner)) continue
+    const call = parseGlmInner(inner)
+    if (call) {
+      matchedGlmBlock = true
+      toolUses.push(call)
+    }
+  }
+  if (!matchedGlmBlock) return null
+
+  // Strip only the GLM blocks we consumed; leave any JSON-style <tool_call>
+  // for the Hermes parser.
+  const cleaned = stripTrim(
+    text.replace(GLM_BLOCK_RE, (m, inner: string) => (isGlmBody(inner) ? '' : m)),
+  )
+  return { cleanedText: cleaned, toolUses }
+}
+
+function parseGlmInner(inner: string): { name: string; input: unknown } | undefined {
+  const firstKey = inner.search(/<arg_key>/i)
+  const name = (firstKey >= 0 ? inner.slice(0, firstKey) : inner).trim()
+  if (!name) return undefined
+  const input: Record<string, unknown> = {}
+  const pairRe = new RegExp(GLM_PAIR_RE)
+  let m: RegExpExecArray | null
+  while ((m = pairRe.exec(inner)) !== null) {
+    const key = (m[1] ?? '').trim()
+    if (!key) continue
+    input[key] = coerceParameter((m[2] ?? '').trim())
+  }
+  return { name, input }
 }
 
 // ── Anthropic <invoke> XML ────────────────────────────────────────

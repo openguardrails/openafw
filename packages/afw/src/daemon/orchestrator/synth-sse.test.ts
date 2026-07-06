@@ -79,3 +79,33 @@ describe('synthesizeSse', () => {
     expect(tool.input).toEqual({ city: 'Paris' })
   })
 })
+
+describe('synthesizeSse freeform tool', () => {
+  const IR_FREEFORM: IRResponse = {
+    model: 'og-coding',
+    blocks: [
+      {
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'apply_patch',
+        input: { input: '*** Begin Patch\n*** Add File: a.txt\n+hi\n*** End Patch' },
+        freeform: true,
+      },
+    ],
+    stopReason: 'tool_use',
+    usage: { in: 10, out: 5 },
+  }
+
+  it('emits a custom_tool_call codex can re-parse, carrying the raw payload', async () => {
+    const sse = synthesizeSse('openai-responses', IR_FREEFORM)
+    expect(sse).toContain('"type":"custom_tool_call"')
+    expect(sse).not.toContain('"type":"function_call"')
+    const result = await parseOpenAIResponsesStream(streamOf(sse))
+    expect(result.errors).toEqual([])
+    const tool = result.blocks.find((b) => b.type === 'tool_use')
+    expect(tool?.type).toBe('tool_use')
+    if (tool?.type !== 'tool_use') return
+    expect(tool.name).toBe('apply_patch')
+    expect(tool.input).toContain('*** Begin Patch')
+  })
+})

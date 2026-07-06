@@ -15,7 +15,7 @@
 import type { AgentId } from '../../core/agent.ts'
 import { logger } from '../../core/logger.ts'
 import type { ModelApi } from '../../core/model-registry.ts'
-import type { Orchestration, RiskTag } from '../../core/packet.ts'
+import type { NormalizedBlock, Orchestration, RiskTag } from '../../core/packet.ts'
 import type { DecoderKind } from '../../core/routes.ts'
 import {
   type AgentRouting,
@@ -152,6 +152,9 @@ export async function tryOrchestrate(ctx: WireContext): Promise<Response | undef
     resolved.kind === 'model' &&
     resolved.api === resolved.clientApi &&
     resolved.capabilities.vision == null &&
+    // A toolCallParser provider emits tool calls as inline text; the byte-tee
+    // relays that untouched and the agent stops. Parse + promote instead.
+    !resolved.provider.toolCallParser &&
     !maybeNeedsWebSearchEmulation(ctx, resolved)
   ) {
     return runSameProtocolSwap(ctx, resolved, ctx.reqBody)
@@ -172,10 +175,47 @@ export async function tryOrchestrate(ctx: WireContext): Promise<Response | undef
 
   // A cross-protocol single-model swap. With stream:true → true-stream the
   // translation, unless the global escape hatch forces buffer + synthesize.
-  if (req.stream === true && streamTranslationEnabled(getRoutingPolicy())) {
+  // A toolCallParser provider must buffer: inline tool calls can only be
+  // reconstructed from the whole text, not from live SSE deltas. A request
+  // carrying a freeform (`custom`) tool must also buffer — a `custom_tool_call`
+  // can't be reconstructed from partial function-argument JSON deltas, so the
+  // response is relabeled on the buffered path.
+  if (
+    req.stream === true &&
+    streamTranslationEnabled(getRoutingPolicy()) &&
+    !resolved.provider.toolCallParser &&
+    !requestHasCustomTool(req)
+  ) {
     return runStreamingSwap(ctx, resolved, req)
   }
   return runBuffered(ctx, resolved, req)
+}
+
+/** Names of the freeform (`custom`) tools in an OpenAI Responses request. The
+ *  response encoders hand calls to these back as `custom_tool_call` items. */
+function freeformToolNames(req: Record<string, unknown>): Set<string> {
+  const names = new Set<string>()
+  if (!Array.isArray(req.tools)) return names
+  for (const raw of req.tools) {
+    if (raw && typeof raw === 'object') {
+      const t = raw as { type?: unknown; name?: unknown }
+      if (t.type === 'custom' && typeof t.name === 'string') names.add(t.name)
+    }
+  }
+  return names
+}
+
+function requestHasCustomTool(req: Record<string, unknown>): boolean {
+  return freeformToolNames(req).size > 0
+}
+
+/** Tag every response tool_use that targets a freeform tool so the encoders
+ *  emit a `custom_tool_call` (raw-string payload) instead of a function_call. */
+function markFreeformCalls(ir: { blocks: NormalizedBlock[] }, names: Set<string>): void {
+  if (names.size === 0) return
+  for (const b of ir.blocks) {
+    if (b.type === 'tool_use' && names.has(b.name)) b.freeform = true
+  }
 }
 
 /** Cheap, parse-free probe: does this Anthropic-bound request likely
@@ -441,6 +481,7 @@ async function runBuffered(
 
     const result = await execAttempt(member, resolved.clientApi, workingReq, execCtx)
     if (result.ok) {
+      markFreeformCalls(result.ir, freeformToolNames(workingReq))
       logger.info(`routed ${ctx.routeKey} → ${member.model.id} (${member.provider.id})`)
     } else {
       logger.warn(
@@ -718,6 +759,7 @@ async function runChain(
         attempts.push({ member, result, role, step: step++ })
         memberOk = result.ok
         if (result.ok) {
+          markFreeformCalls(result.ir, freeformToolNames(workingReq))
           logger.info(`routed ${ctx.routeKey} → ${member.model.id} (${member.provider.id})`)
           winner = { ir: result.ir, status: result.status }
         } else {

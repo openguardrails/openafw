@@ -11,7 +11,12 @@ import type { ModelApi } from '../../core/model-registry.ts'
 import type { NormalizedBlock } from '../../core/packet.ts'
 import { type IRResponse, serializeResponseFromIR } from '../translate/index.ts'
 import { openaiStopReason } from '../translate/ir.ts'
-import { LOCAL_SHELL_TOOL, inputToShellAction, stringifyToolArgs } from '../translate/shared.ts'
+import {
+  LOCAL_SHELL_TOOL,
+  freeformInputText,
+  inputToShellAction,
+  stringifyToolArgs,
+} from '../translate/shared.ts'
 
 type SseEvent = { event?: string; data: string }
 
@@ -188,10 +193,21 @@ function synthOpenAIResponses(ir: IRResponse): string {
     | { kind: 'message'; id: string; text: string }
     | { kind: 'function_call'; id: string; callId: string; name: string; argsStr: string }
     | { kind: 'local_shell_call'; id: string; callId: string; action: unknown }
+    | { kind: 'custom_tool_call'; id: string; callId: string; name: string; input: string }
   const items: Item[] = []
   for (const b of ir.blocks) {
     if (b.type === 'text') {
       items.push({ kind: 'message', id: `msg_${nanoid()}`, text: b.text })
+    } else if (b.type === 'tool_use' && b.freeform) {
+      // The client registered this as a freeform `custom` tool — emit a
+      // custom_tool_call carrying the raw payload, not a function_call.
+      items.push({
+        kind: 'custom_tool_call',
+        id: `ctc_${nanoid()}`,
+        callId: b.id || `call_${nanoid()}`,
+        name: b.name,
+        input: freeformInputText(b.input),
+      })
     } else if (b.type === 'tool_use' && b.name === LOCAL_SHELL_TOOL) {
       // codex's shell built-in — emit a local_shell_call item, not a
       // function_call codex has no tool for (mirrors the true-stream writer).
@@ -241,6 +257,16 @@ function synthOpenAIResponses(ir: IRResponse): string {
           status: 'completed',
           call_id: it.callId,
           action: it.action,
+        }
+      }
+      if (it.kind === 'custom_tool_call') {
+        return {
+          id: it.id,
+          type: 'custom_tool_call',
+          status: 'completed',
+          call_id: it.callId,
+          name: it.name,
+          input: it.input,
         }
       }
       return {
@@ -390,6 +416,61 @@ function synthOpenAIResponses(ir: IRResponse): string {
             status: 'completed',
             call_id: it.callId,
             action: it.action,
+          },
+        }),
+      })
+    } else if (it.kind === 'custom_tool_call') {
+      // Freeform tool — its payload is delivered whole via input-delta + done,
+      // then the completed item (mirrors codex's own custom_tool_call stream).
+      events.push({
+        event: 'response.output_item.added',
+        data: JSON.stringify({
+          type: 'response.output_item.added',
+          sequence_number: seq++,
+          output_index: outputIndex,
+          item: {
+            id: it.id,
+            type: 'custom_tool_call',
+            status: 'in_progress',
+            call_id: it.callId,
+            name: it.name,
+            input: '',
+          },
+        }),
+      })
+      events.push({
+        event: 'response.custom_tool_call_input.delta',
+        data: JSON.stringify({
+          type: 'response.custom_tool_call_input.delta',
+          sequence_number: seq++,
+          item_id: it.id,
+          output_index: outputIndex,
+          delta: it.input,
+        }),
+      })
+      events.push({
+        event: 'response.custom_tool_call_input.done',
+        data: JSON.stringify({
+          type: 'response.custom_tool_call_input.done',
+          sequence_number: seq++,
+          item_id: it.id,
+          output_index: outputIndex,
+          input: it.input,
+        }),
+      })
+      events.push({
+        event: 'response.output_item.done',
+        data: JSON.stringify({
+          type: 'response.output_item.done',
+          sequence_number: seq++,
+          output_index: outputIndex,
+          item: {
+            id: it.id,
+            type: 'custom_tool_call',
+            status: 'completed',
+            call_id: it.callId,
+            name: it.name,
+            input: it.input,
           },
         }),
       })

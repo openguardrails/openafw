@@ -26,7 +26,20 @@ export type IRBlock =
 
 export type IRMessage = { role: 'user' | 'assistant'; content: IRBlock[] }
 
-export type IRTool = { name: string; description?: string; inputSchema: unknown }
+export type IRTool = {
+  name: string
+  description?: string
+  inputSchema: unknown
+  /** A freeform (OpenAI `custom`) tool: its call is a single raw-text payload,
+   *  not JSON arguments. codex's `apply_patch` is the canonical case. Routed
+   *  models that only speak JSON/native tool calls are given a function tool
+   *  with one `input` string arg (see effectiveToolSchema); the response side
+   *  emits the call back as a `custom_tool_call` the client registered. */
+  freeform?: boolean
+  /** Optional Lark grammar the freeform payload must follow — folded into the
+   *  tool description so the routed model knows the exact syntax. */
+  grammar?: string
+}
 
 /** How the model picks among available tools. Anthropic vocabulary:
  *    - `auto`       — model decides (or skips)

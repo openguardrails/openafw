@@ -2,6 +2,7 @@
 // OpenAI carries tool results as standalone `role:'tool'` messages, which the
 // IR folds back into `tool_result` blocks on a user turn.
 
+import { nanoid } from 'nanoid'
 import type { NormalizedBlock } from '../../core/packet.ts'
 import {
   type IRBlock,
@@ -91,13 +92,14 @@ export function responseToIR(json: unknown): IRResponse {
   const text = xmlCalls ? xmlCalls.cleanedText : rawText
   if (text.length > 0) blocks.push({ type: 'text', text })
   if (xmlCalls) {
-    let synthIndex = 0
     for (const tu of xmlCalls.toolUses) {
       blocks.push({
         type: 'tool_use',
-        // XML formats carry no tool_use_id; synthesize a stable one
-        // per response so a follow-up tool_result can reference it.
-        id: `afw_xml_${synthIndex++}`,
+        // XML formats carry no tool_use_id; synthesize a GLOBALLY unique one.
+        // A per-response counter collides across turns (every turn's call is
+        // `afw_xml_0`), so a long history shares one id and the model can't
+        // tell its actions apart. nanoid keeps each call distinct.
+        id: `afw_xml_${nanoid()}`,
         name: tu.name,
         input: tu.input,
         ...(tu.rawJson ? { rawJson: tu.rawJson } : {}),

@@ -395,3 +395,157 @@ describe('lossy directions', () => {
     expect(back.stopReason).toBeUndefined()
   })
 })
+
+describe('inline-XML tool calls in an OpenAI Responses message', () => {
+  // A model behind a Responses endpoint that emits its tool call as inline
+  // GLM XML inside an assistant message, not a native function_call item —
+  // the shape captured from the codex → xiangxinai trace.
+  const responseWithXmlCall = {
+    model: 'og-coding',
+    status: 'completed',
+    output: [
+      { type: 'reasoning', content: [{ type: 'reasoning_text', text: 'let me edit' }] },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: '<tool_call>apply_patch<arg_key>file</arg_key><arg_value>/tmp/x.md</arg_value><arg_key>content</arg_key><arg_value># hi</arg_value></tool_call>',
+          },
+        ],
+      },
+    ],
+    usage: { input_tokens: 10, output_tokens: 20 },
+  }
+
+  it('promotes the inline XML into a real tool_use block', () => {
+    const ir = parseResponseToIR('openai-responses', responseWithXmlCall)
+    const tool = ir.blocks.find((b) => b.type === 'tool_use')
+    expect(tool).toMatchObject({
+      name: 'apply_patch',
+      input: { file: '/tmp/x.md', content: '# hi' },
+    })
+    // The raw XML must not survive as visible text.
+    expect(ir.blocks.some((b) => b.type === 'text' && b.text.includes('<tool_call>'))).toBe(false)
+    expect(ir.stopReason).toBe('tool_use')
+  })
+
+  it('re-serializes to a Responses SSE stream carrying a function_call item', () => {
+    const ir = parseResponseToIR('openai-responses', responseWithXmlCall)
+    const wire = serializeResponseFromIR('openai-responses', ir)
+    const text = typeof wire === 'string' ? wire : JSON.stringify(wire)
+    expect(text).toContain('function_call')
+    expect(text).toContain('apply_patch')
+  })
+})
+
+describe('freeform (custom) tool round-trip', () => {
+  const codexRequest = {
+    model: 'gpt-5',
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'edit it' }] }],
+    tools: [
+      {
+        type: 'custom',
+        name: 'apply_patch',
+        description: 'Use apply_patch to edit files. This is a FREEFORM tool.',
+        format: { type: 'grammar', syntax: 'lark', definition: 'start: "*** Begin Patch"' },
+      },
+    ],
+    stream: true,
+  }
+
+  it('decodes a custom tool as freeform with its grammar', () => {
+    const ir = parseRequestToIR('openai-responses', codexRequest)
+    const tool = ir.tools?.find((t) => t.name === 'apply_patch')
+    expect(tool?.freeform).toBe(true)
+    expect(tool?.grammar).toContain('Begin Patch')
+  })
+
+  it('exposes the freeform tool to a chat/responses upstream as a single-input function', () => {
+    const ir = parseRequestToIR('openai-responses', codexRequest)
+    for (const api of ['openai-chat', 'openai-responses', 'anthropic-messages'] as const) {
+      const wire = JSON.stringify(serializeRequestFromIR(api, ir))
+      const parsed = JSON.parse(wire)
+      const tools = api === 'anthropic-messages' ? parsed.tools : parsed.tools
+      const t = tools.find((x: { name?: string; function?: { name?: string } }) =>
+        (x.name ?? x.function?.name) === 'apply_patch',
+      )
+      const schema = t.parameters ?? t.function?.parameters ?? t.input_schema
+      expect(schema.properties.input.type).toBe('string')
+      expect(schema.required).toContain('input')
+      const desc = t.description ?? t.function?.description
+      expect(desc).toContain('Begin Patch') // grammar folded in
+    }
+  })
+
+  it('decodes a custom_tool_call in history as {input} shape', () => {
+    const req = {
+      model: 'gpt-5',
+      input: [
+        { type: 'custom_tool_call', call_id: 'c1', name: 'apply_patch', input: '*** Begin Patch\n*** End Patch' },
+        { type: 'custom_tool_call_output', call_id: 'c1', output: 'done' },
+      ],
+    }
+    const ir = parseRequestToIR('openai-responses', req)
+    const asst = ir.messages.find((m) => m.role === 'assistant')
+    const call = asst?.content.find((b) => b.type === 'tool_use') as { input: unknown } | undefined
+    expect(call?.input).toEqual({ input: '*** Begin Patch\n*** End Patch' })
+  })
+
+  it('re-emits a freeform tool_use as a custom_tool_call, not a function_call', () => {
+    const ir: IRResponse = {
+      model: 'og-coding',
+      blocks: [
+        {
+          type: 'tool_use',
+          id: 'call_1',
+          name: 'apply_patch',
+          input: { input: '*** Begin Patch\n*** End Patch' },
+          freeform: true,
+        },
+      ],
+      stopReason: 'tool_use',
+      usage: { in: 1, out: 1 },
+    }
+    const wire = JSON.stringify(serializeResponseFromIR('openai-responses', ir))
+    const parsed = JSON.parse(wire)
+    const item = parsed.output.find((o: { type: string }) => o.type === 'custom_tool_call')
+    expect(item).toBeDefined()
+    expect(item.name).toBe('apply_patch')
+    expect(item.input).toBe('*** Begin Patch\n*** End Patch')
+    expect(parsed.output.some((o: { type: string }) => o.type === 'function_call')).toBe(false)
+  })
+})
+
+describe('synthesized tool-call ids are unique across turns', () => {
+  const xmlResponse = (patch: string) => ({
+    model: 'og-coding',
+    status: 'completed',
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [
+          {
+            type: 'output_text',
+            text: `<tool_call>apply_patch<arg_key>definition</arg_key><arg_value>${patch}</arg_value></tool_call>`,
+          },
+        ],
+      },
+    ],
+    usage: { input_tokens: 1, output_tokens: 1 },
+  })
+
+  it('does not reuse afw_xml_0 for every response (id collision bug)', () => {
+    const ir1 = parseResponseToIR('openai-responses', xmlResponse('add'))
+    const ir2 = parseResponseToIR('openai-responses', xmlResponse('delete'))
+    const id1 = ir1.blocks.find((b) => b.type === 'tool_use')?.id
+    const id2 = ir2.blocks.find((b) => b.type === 'tool_use')?.id
+    expect(id1).toBeTruthy()
+    expect(id2).toBeTruthy()
+    expect(id1).not.toBe(id2)
+  })
+})

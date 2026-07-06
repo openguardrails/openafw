@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   extractAnthropicInvokeToolCalls,
+  extractGlmArgKvToolCalls,
   extractHermesToolCalls,
   extractInlineToolCallsXml,
 } from './xml-tool-calls.ts'
@@ -206,5 +207,80 @@ describe('extractInlineToolCallsXml (unified entry)', () => {
 
   it('returns null when neither format is present', () => {
     expect(extractInlineToolCallsXml('hello world')).toBeNull()
+  })
+
+  it('routes GLM <arg_key> text to the GLM parser, not Hermes', () => {
+    const out = extractInlineToolCallsXml(
+      '<tool_call>apply_patch<arg_key>file</arg_key><arg_value>/tmp/x</arg_value></tool_call>',
+    )
+    expect(out?.toolUses).toEqual([{ name: 'apply_patch', input: { file: '/tmp/x' } }])
+  })
+})
+
+describe('extractGlmArgKvToolCalls', () => {
+  it('returns null without a GLM-shaped <tool_call>', () => {
+    expect(extractGlmArgKvToolCalls('plain answer')).toBeNull()
+    // JSON body is Hermes' shape — GLM defers.
+    expect(extractGlmArgKvToolCalls('<tool_call>{"name":"a"}</tool_call>')).toBeNull()
+  })
+
+  it('recognizes a bare no-arg <tool_call>name</tool_call> as an empty call', () => {
+    const out = extractGlmArgKvToolCalls('<tool_call>apply_patch</tool_call>')
+    expect(out?.toolUses).toEqual([{ name: 'apply_patch', input: {} }])
+    expect(out?.cleanedText).toBe('')
+  })
+
+  it('echoes the grammar field name as the arg key (real GLM apply_patch)', () => {
+    const patch = '*** Begin Patch\n*** Add File: hello.txt\n+hello world\n*** End Patch\n'
+    const out = extractGlmArgKvToolCalls(
+      `<tool_call>apply_patch<arg_key>definition</arg_key><arg_value>${patch}</arg_value></tool_call>`,
+    )
+    expect(out?.toolUses[0]?.name).toBe('apply_patch')
+    expect((out?.toolUses[0]?.input as Record<string, string>).definition).toContain('Begin Patch')
+  })
+
+  it('parses the real-world apply_patch call from the codex trace', () => {
+    const text =
+      '<tool_call>apply_patch<arg_key>file</arg_key><arg_value>/Users/tom/workspace/dev/predict/README.md</arg_value><arg_key>content</arg_key><arg_value># Predict Market Agent\n</arg_value></tool_call>'
+    const out = extractGlmArgKvToolCalls(text)
+    expect(out?.toolUses).toEqual([
+      {
+        name: 'apply_patch',
+        input: {
+          file: '/Users/tom/workspace/dev/predict/README.md',
+          content: '# Predict Market Agent',
+        },
+      },
+    ])
+    expect(out?.cleanedText).toBe('')
+  })
+
+  it('keeps surrounding prose as cleaned text', () => {
+    const text =
+      'Let me edit that.\n<tool_call>read_file<arg_key>path</arg_key><arg_value>a.ts</arg_value></tool_call>'
+    const out = extractGlmArgKvToolCalls(text)
+    expect(out?.toolUses[0]?.name).toBe('read_file')
+    expect(out?.cleanedText).toBe('Let me edit that.')
+  })
+
+  it('handles the name on its own line and whitespace between pairs', () => {
+    const text = `<tool_call>
+      run
+      <arg_key>cmd</arg_key><arg_value>ls</arg_value>
+      <arg_key>timeout</arg_key><arg_value>30</arg_value>
+    </tool_call>`
+    const out = extractGlmArgKvToolCalls(text)
+    expect(out?.toolUses).toEqual([{ name: 'run', input: { cmd: 'ls', timeout: 30 } }])
+  })
+
+  it('parses multiple GLM tool calls in one message', () => {
+    const text =
+      '<tool_call>a<arg_key>x</arg_key><arg_value>1</arg_value></tool_call>' +
+      '<tool_call>b<arg_key>y</arg_key><arg_value>2</arg_value></tool_call>'
+    const out = extractGlmArgKvToolCalls(text)
+    expect(out?.toolUses).toEqual([
+      { name: 'a', input: { x: 1 } },
+      { name: 'b', input: { y: 2 } },
+    ])
   })
 })

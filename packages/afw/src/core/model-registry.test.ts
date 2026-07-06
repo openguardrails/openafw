@@ -225,6 +225,36 @@ describe('normalizeModelRegistry', () => {
     expect(reg.providers[0]?.reasoningEffort).toBe('high')
     expect(reg.models[0]?.reasoningEffort).toBe('xhigh')
   })
+
+  it('loads a named tool-call parser dialect', () => {
+    const reg = normalizeModelRegistry({
+      version: 3,
+      providers: [{ ...provider, toolCallParser: 'glm' }],
+      models: [model],
+      combos: [],
+    })
+    expect(reg.providers[0]?.toolCallParser).toBe('glm')
+  })
+
+  it('maps the legacy xmlToolCalls boolean to the glm parser', () => {
+    const reg = normalizeModelRegistry({
+      version: 3,
+      providers: [{ ...provider, xmlToolCalls: true }],
+      models: [model],
+      combos: [],
+    })
+    expect(reg.providers[0]?.toolCallParser).toBe('glm')
+  })
+
+  it('ignores an unknown tool-call parser', () => {
+    const reg = normalizeModelRegistry({
+      version: 3,
+      providers: [{ ...provider, toolCallParser: 'nonsense' }],
+      models: [model],
+      combos: [],
+    })
+    expect(reg.providers[0]?.toolCallParser).toBeUndefined()
+  })
 })
 
 describe('registry helpers', () => {

@@ -33,7 +33,17 @@ export type RiskTag = {
 
 export type NormalizedBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: unknown; rawJson?: string }
+  | {
+      type: 'tool_use'
+      id: string
+      name: string
+      input: unknown
+      rawJson?: string
+      /** True when this call targets a freeform (OpenAI `custom`) tool — the
+       *  response encoders emit it as a `custom_tool_call` with a raw-string
+       *  payload instead of a JSON-argument `function_call`. */
+      freeform?: boolean
+    }
   | { type: 'tool_result'; toolUseId: string; content: unknown; isError?: boolean }
   | { type: 'thinking'; text: string }
   | { type: 'image'; source: unknown }
