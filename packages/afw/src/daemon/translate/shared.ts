@@ -140,6 +140,20 @@ export const LOCAL_SHELL_SCHEMA = {
     },
     workdir: { type: 'string', description: 'Working directory for the command.' },
     timeout_ms: { type: 'number', description: 'Timeout in milliseconds.' },
+    sandbox_permissions: {
+      type: 'string',
+      enum: ['use_default', 'require_escalated'],
+      description: 'Request execution outside the sandbox when the command requires it.',
+    },
+    justification: {
+      type: 'string',
+      description: 'User-facing approval question for an escalated command.',
+    },
+    prefix_rule: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Reusable command prefix proposed with an escalation request.',
+    },
   },
   required: ['command'],
 } as const
@@ -153,6 +167,13 @@ export function shellActionToInput(action: unknown): Record<string, unknown> {
   const workdir = a.workdir ?? a.working_directory
   if (typeof workdir === 'string') input.workdir = workdir
   if (typeof a.timeout_ms === 'number') input.timeout_ms = a.timeout_ms
+  if (a.sandbox_permissions === 'use_default' || a.sandbox_permissions === 'require_escalated') {
+    input.sandbox_permissions = a.sandbox_permissions
+  }
+  if (typeof a.justification === 'string') input.justification = a.justification
+  if (Array.isArray(a.prefix_rule) && a.prefix_rule.every((v: unknown) => typeof v === 'string')) {
+    input.prefix_rule = a.prefix_rule
+  }
   return input
 }
 
@@ -169,6 +190,13 @@ export function inputToShellAction(input: unknown): Record<string, unknown> {
   const workdir = i.workdir ?? i.working_directory
   if (typeof workdir === 'string') action.working_directory = workdir
   if (typeof i.timeout_ms === 'number') action.timeout_ms = i.timeout_ms
+  if (i.sandbox_permissions === 'use_default' || i.sandbox_permissions === 'require_escalated') {
+    action.sandbox_permissions = i.sandbox_permissions
+  }
+  if (typeof i.justification === 'string') action.justification = i.justification
+  if (Array.isArray(i.prefix_rule) && i.prefix_rule.every((v: unknown) => typeof v === 'string')) {
+    action.prefix_rule = i.prefix_rule
+  }
   return action
 }
 

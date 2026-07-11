@@ -330,6 +330,49 @@ describe('codex local_shell built-in (Responses → Chat)', () => {
     expect(responses.output.some((o) => o.type === 'function_call')).toBe(false)
   })
 
+  it('preserves sandbox approval metadata on a local_shell call', () => {
+    const chatResponse = {
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_approval',
+                type: 'function',
+                function: {
+                  name: 'local_shell',
+                  arguments: JSON.stringify({
+                    command: ['curl', '-L', 'https://example.com/archive.tar.gz'],
+                    sandbox_permissions: 'require_escalated',
+                    justification: 'Allow this download?',
+                    prefix_rule: ['curl', '-L'],
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 3 },
+    }
+    const responses = translateResponseJson(
+      'openai-chat',
+      'openai-responses',
+      chatResponse,
+    ) as { output: Array<Record<string, unknown>> }
+    const shell = responses.output.find((o) => o.type === 'local_shell_call')
+    expect(shell?.action).toMatchObject({
+      type: 'exec',
+      command: ['curl', '-L', 'https://example.com/archive.tar.gz'],
+      sandbox_permissions: 'require_escalated',
+      justification: 'Allow this download?',
+      prefix_rule: ['curl', '-L'],
+    })
+  })
+
   it('folds a prior local_shell_call / output pair back into the IR history', () => {
     const ir = parseRequestToIR('openai-responses', {
       model: 'gpt-5-codex',
