@@ -146,6 +146,8 @@ function parseHermesInner(
 
 const GLM_BLOCK_RE = /<tool_call>([\s\S]*?)<\/tool_call>/gi
 const GLM_PAIR_RE = /<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi
+const GLM_UNCLOSED_JS_CALL_RE = /<tool_call>\s*([A-Za-z_][\w.:-]*)\s*\(\s*(\{[\s\S]*\})\s*\)\s*$/i
+const GLM_UNCLOSED_BARE_RE = /<tool_call>\s*([A-Za-z_][\w.:-]*)\s*$/i
 
 /** A `<tool_call>` block is GLM-shaped (not Hermes) when its body is bare
  *  text — a tool name followed by optional `<arg_key>/<arg_value>` pairs —
@@ -171,12 +173,32 @@ export function extractGlmArgKvToolCalls(text: string): XmlToolCallParse | null 
       toolUses.push(call)
     }
   }
+  const unclosedJsCall = text.match(GLM_UNCLOSED_JS_CALL_RE)
+  if (unclosedJsCall?.[1] && unclosedJsCall[2]) {
+    try {
+      const input: unknown = JSON.parse(unclosedJsCall[2])
+      matchedGlmBlock = true
+      toolUses.push({ name: unclosedJsCall[1], input })
+    } catch {
+      // Leave malformed arguments as visible text so the model's prose is not
+      // accidentally promoted into an executable tool call.
+    }
+  } else {
+    const unclosedBare = text.match(GLM_UNCLOSED_BARE_RE)
+    if (unclosedBare?.[1]) {
+      matchedGlmBlock = true
+      toolUses.push({ name: unclosedBare[1], input: {} })
+    }
+  }
   if (!matchedGlmBlock) return null
 
   // Strip only the GLM blocks we consumed; leave any JSON-style <tool_call>
   // for the Hermes parser.
   const cleaned = stripTrim(
-    text.replace(GLM_BLOCK_RE, (m, inner: string) => (isGlmBody(inner) ? '' : m)),
+    text
+      .replace(GLM_BLOCK_RE, (m, inner: string) => (isGlmBody(inner) ? '' : m))
+      .replace(GLM_UNCLOSED_JS_CALL_RE, '')
+      .replace(GLM_UNCLOSED_BARE_RE, ''),
   )
   return { cleanedText: cleaned, toolUses }
 }

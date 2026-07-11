@@ -230,6 +230,36 @@ describe('extractGlmArgKvToolCalls', () => {
     expect(out?.cleanedText).toBe('')
   })
 
+  it('recovers the unterminated bare tool call emitted by GLM for codex', () => {
+    const out = extractGlmArgKvToolCalls(
+      '让我看看当前环境。<tool_call>functions.collaboration.list_agents',
+    )
+    expect(out).toEqual({
+      cleanedText: '让我看看当前环境。',
+      toolUses: [{ name: 'functions.collaboration.list_agents', input: {} }],
+    })
+  })
+
+  it('recovers an unterminated JavaScript-shaped MCP call with JSON arguments', () => {
+    const out = extractGlmArgKvToolCalls(
+      '好，我来实际调用一个 MCP 工具给你看看。<tool_call>tool_search.perform_search({ "query": "", "limit": 50 })',
+    )
+    expect(out).toEqual({
+      cleanedText: '好，我来实际调用一个 MCP 工具给你看看。',
+      toolUses: [{ name: 'tool_search.perform_search', input: { query: '', limit: 50 } }],
+    })
+  })
+
+  it('does not execute a JavaScript-shaped call with malformed JSON arguments', () => {
+    expect(
+      extractGlmArgKvToolCalls('<tool_call>tool_search.perform_search({ query: "" })'),
+    ).toBeNull()
+  })
+
+  it('does not promote prose after an unterminated tool-call marker', () => {
+    expect(extractGlmArgKvToolCalls('<tool_call>this is not a tool name')).toBeNull()
+  })
+
   it('echoes the grammar field name as the arg key (real GLM apply_patch)', () => {
     const patch = '*** Begin Patch\n*** Add File: hello.txt\n+hello world\n*** End Patch\n'
     const out = extractGlmArgKvToolCalls(

@@ -515,6 +515,71 @@ describe('inline-XML tool calls in an OpenAI Responses message', () => {
     expect(text).toContain('function_call')
     expect(text).toContain('apply_patch')
   })
+
+  it("promotes GLM's unterminated bare call into a Responses function_call", () => {
+    const ir = parseResponseToIR('openai-responses', {
+      model: 'GLM-5.2',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: '让我看看当前环境。<tool_call>functions.collaboration.list_agents',
+            },
+          ],
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })
+
+    expect(ir.blocks).toEqual([
+      { type: 'text', text: '让我看看当前环境。' },
+      expect.objectContaining({
+        type: 'tool_use',
+        name: 'functions.collaboration.list_agents',
+        input: {},
+      }),
+    ])
+    expect(ir.stopReason).toBe('tool_use')
+    expect(JSON.stringify(serializeResponseFromIR('openai-responses', ir))).toContain(
+      'function_call',
+    )
+  })
+
+  it('promotes the unterminated JavaScript-shaped MCP call from the real trace', () => {
+    const ir = parseResponseToIR('openai-responses', {
+      model: 'GLM-5.2',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            {
+              type: 'output_text',
+              text: '好，我来实际调用一个 MCP 工具给你看看。<tool_call>tool_search.perform_search({ "query": "", "limit": 50 })',
+            },
+          ],
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 12 },
+    })
+
+    expect(ir.blocks).toEqual([
+      { type: 'text', text: '好，我来实际调用一个 MCP 工具给你看看。' },
+      expect.objectContaining({
+        type: 'tool_use',
+        name: 'tool_search.perform_search',
+        input: { query: '', limit: 50 },
+      }),
+    ])
+    expect(ir.stopReason).toBe('tool_use')
+  })
 })
 
 describe('freeform (custom) tool round-trip', () => {
