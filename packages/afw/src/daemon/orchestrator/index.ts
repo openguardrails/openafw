@@ -36,7 +36,12 @@ import {
   serializeResponseFromIR,
   translateSseStream,
 } from '../translate/index.ts'
-import { type IRMessage, type IRRequest, mergeConsecutive } from '../translate/ir.ts'
+import {
+  type IRMessage,
+  type IRRequest,
+  mergeConsecutive,
+  normalizeToolCallNames,
+} from '../translate/ir.ts'
 import { periodLabel, spendInPeriod, tokensInPeriod } from './budget.ts'
 import { type RoutedAttempt, captureChain, captureSingle } from './capture.ts'
 import {
@@ -216,6 +221,18 @@ function markFreeformCalls(ir: { blocks: NormalizedBlock[] }, names: Set<string>
   for (const b of ir.blocks) {
     if (b.type === 'tool_use' && names.has(b.name)) b.freeform = true
   }
+}
+
+function normalizeResponseToolNames(
+  ir: { blocks: NormalizedBlock[] },
+  clientApi: ModelApi,
+  req: Record<string, unknown>,
+): void {
+  const tools = parseRequestToIR(clientApi, req).tools ?? []
+  normalizeToolCallNames(
+    ir.blocks,
+    tools.map((tool) => tool.name),
+  )
 }
 
 /** Cheap, parse-free probe: does this Anthropic-bound request likely
@@ -481,6 +498,7 @@ async function runBuffered(
 
     const result = await execAttempt(member, resolved.clientApi, workingReq, execCtx)
     if (result.ok) {
+      normalizeResponseToolNames(result.ir, resolved.clientApi, workingReq)
       markFreeformCalls(result.ir, freeformToolNames(workingReq))
       logger.info(`routed ${ctx.routeKey} → ${member.model.id} (${member.provider.id})`)
     } else {
@@ -759,6 +777,7 @@ async function runChain(
         attempts.push({ member, result, role, step: step++ })
         memberOk = result.ok
         if (result.ok) {
+          normalizeResponseToolNames(result.ir, clientApi, workingReq)
           markFreeformCalls(result.ir, freeformToolNames(workingReq))
           logger.info(`routed ${ctx.routeKey} → ${member.model.id} (${member.provider.id})`)
           winner = { ir: result.ir, status: result.status }

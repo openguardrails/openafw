@@ -86,6 +86,22 @@ export type IRResponse = {
   usage: IRUsage
 }
 
+export function normalizeToolCallNames(
+  blocks: NormalizedBlock[],
+  registeredNames: Iterable<string>,
+): number {
+  const names = new Set(registeredNames)
+  let changed = 0
+  for (const block of blocks) {
+    if (block.type !== 'tool_use' || names.has(block.name)) continue
+    const matches = [...new Set(block.name.split('.').filter((part) => names.has(part)))]
+    if (matches.length !== 1) continue
+    block.name = matches[0]!
+    changed++
+  }
+  return changed
+}
+
 /** Merge adjacent messages of the same role — Anthropic expects alternating
  *  turns, and the OpenAI→IR parsers can emit consecutive user messages (a
  *  `tool` result message followed by a `user` message). */

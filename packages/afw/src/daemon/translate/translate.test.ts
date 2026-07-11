@@ -10,8 +10,41 @@ import {
   translateRequest,
   translateResponseJson,
 } from './index.ts'
+import { normalizeToolCallNames } from './ir.ts'
 
 const APIS: ModelApi[] = ['anthropic-messages', 'openai-chat', 'openai-responses']
+
+describe('tool-call name normalization', () => {
+  it('maps a GLM SDK-style alias to the registered Codex tool', () => {
+    const blocks: IRResponse['blocks'] = [
+      {
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'tool_search.tools_search',
+        input: { query: 'list all available MCP tools' },
+      },
+    ]
+
+    expect(normalizeToolCallNames(blocks, ['tool_search'])).toBe(1)
+    expect(blocks[0]).toMatchObject({
+      name: 'tool_search',
+      input: { query: 'list all available MCP tools' },
+    })
+  })
+
+  it('preserves exact and unknown names', () => {
+    const blocks: IRResponse['blocks'] = [
+      { type: 'tool_use', id: 'call_1', name: 'server.search', input: {} },
+      { type: 'tool_use', id: 'call_2', name: 'other.search', input: {} },
+    ]
+
+    expect(normalizeToolCallNames(blocks, ['server.search', 'tool_search'])).toBe(0)
+    expect(blocks.map((block) => (block.type === 'tool_use' ? block.name : ''))).toEqual([
+      'server.search',
+      'other.search',
+    ])
+  })
+})
 
 // A request exercising every block kind that survives all three protocols:
 // text, top-level image, tool_use, tool_result, a mixed user turn, tools.
