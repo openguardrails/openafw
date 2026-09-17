@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/afw-engine", "crates/openafw", "crates/openafw-desktop"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+fancy-regex = "0.14"

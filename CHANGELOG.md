@@ -1,38 +1,64 @@
 # Changelog
 
-All notable changes to `@openafw/openafw`. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) loosely; dates are
-local to where the release was cut.
+## 1.0.0 — 2026-09-17
 
-## [0.1.0] — unreleased
+A full rewrite in Rust. OpenAFW is now a local AI firewall for coding agents:
+a pass-through proxy that replaces secrets with placeholders before a request
+leaves the machine, and puts them back when the reply comes home.
 
-The firewall cut. `afw` is forked from an earlier cost-saver project by
-porting its firewall core and dropping the cost-saver/metric surfaces.
+Everything before this release was a different program — a TypeScript agent
+router with model fusion and provider switching. That code is not carried
+forward; it remains in the git history and in the `v0.11.3` and earlier tags
+and releases, and `@openafw/openafw@0.11.3` stays on npm.
 
-### Added
+### The firewall
 
-- **Wire tap + live visibility.** Reverse proxy at
-  `/wire/<agent>/<provider>/...` that captures and decodes every model call
-  (Anthropic, OpenAI chat & responses, Codex) and MCP frame into a common
-  `AgentPacket`, persisted to a minimal local SQLite trace store.
-- **Per-route model routing.** Point any agent's traffic at any model, with
-  failover chains and capability rules. Includes the Claude Code subagent
-  classifier — the planner carries the orchestrator-only `Agent` tool,
-  subagents never do — so the workers in a Dynamic Workflow can be routed to
-  a cheaper model while the planner stays untouched.
-- **Security detector pipeline** (`daemon/risk/`). Detectors are pure
-  `(packet) => RiskTag[]` functions run over every decoded packet:
-  - `secret-leak` — credential shapes in any captured text.
-  - `shell-pattern` — dangerous shell commands in tool calls.
-  - `prompt-injection` — **indirect prompt injection in untrusted
-    `tool_result` content** (instruction-override, role-injection,
-    exfiltration, hidden/zero-width characters). The headline agent-firewall
-    check and the documented extension point for richer detection.
+- Pass-through proxy on `127.0.0.1:4141` for Anthropic Messages, OpenAI Chat
+  Completions, OpenAI Responses and Gemini, streaming included. Bodies are
+  masked on the way out and restored on the way back; unknown protocols pass
+  through byte-for-byte.
+- `crates/afw-engine` — the OGR 1.4 local-redaction engine: ruleset compile
+  with self-verification, `reject_value` predicates, session map, mask,
+  restore, and SSE rewriting that survives a placeholder split across chunks.
+- Placeholders are `OGRK` + a minter letter + seven digits (`OGRKF0000001`,
+  twelve characters). The shape and the namespacing letter were chosen by
+  measurement across five model setups — see `docs/placeholder-experiment.md`.
+- The local machine is the trusted zone: your terminal, your tools and your
+  files still see real values. Logs never contain them.
 
-### Removed (relative to the pre-fork project)
+### Keys and agents
 
-- The "Thomas (T)" outcome-per-token metric and its spec, API route, and
-  dashboard view.
-- The outcomes/value-detection subsystem and cost-per-task framing.
-- The React dashboard and the reporting CLI commands (`list`, `show`,
-  `report`, `tail`, `replay`, `tool`, `prune`, `archive`, `rollback`).
+- Encrypted key vault (AES-256-GCM) at `~/.openafw/vault.bin`, with profiles
+  and a per-agent local token.
+- `openafw protect claude|codex|gemini|opencode|openclaw|hermes` writes that
+  agent's own config and keeps a byte-exact backup; `unprotect` restores it
+  byte for byte.
+- `POST /__afw/api/mask` on loopback for local plugins — mints placeholders,
+  never reveals values.
+
+### Running it
+
+- `openafw service install|status|uninstall` — launchd on macOS, systemd
+  `--user` on Linux, Task Scheduler on Windows. Uninstall removes exactly
+  what install wrote.
+- `crates/openafw-desktop` — a Tauri tray/menu-bar app with the daemon
+  in-process; it attaches to an already-listening service rather than
+  starting a second one. Installers via `scripts/build-desktop.sh`.
+- Status page at `http://127.0.0.1:4141/__afw/`, with one-click protect and
+  unprotect per agent.
+
+### OpenGuardrails
+
+- `openafw connect` pulls served rulesets and reports per-step verdicts
+  (`step/request` / `step/response`). Observe-only by default; `--ogr-enforce`
+  refuses blocked steps.
+
+### Seeing it work
+
+- `--tap DIR` writes every provider-bound body so you can grep for the secret
+  yourself, and `--mask false` gives you the unprotected baseline to compare
+  against.
+
+### Licence
+
+- Relicensed to Apache-2.0. Earlier releases were MIT.
