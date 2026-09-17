@@ -1,0 +1,284 @@
+{
+  "$comment": "OGR local-redaction conformance corpus (specification/local-redaction.md). The ruleset is three rules copied verbatim from the AIRS catalog (policy-engine/entities.ts, 2026-08-28) — one with `group`. Every implementation of mask()/restore(), in any engine, runs these cases; mask cases start a fresh session and feed `steps` in order, expecting `expect[i]` per step and, when given, `values` as the session map afterwards.",
+  "ruleset": {
+    "id": "rs_conformance000000000000000000001",
+    "generated_at": "2026-08-28T00:00:00Z",
+    "family": "secrets",
+    "dialect": "ogr-re-1",
+    "rules": [
+      {
+        "id": "entity_api_key",
+        "category": "security.secret_leak.api_key",
+        "severity": "critical",
+        "tier": "strong",
+        "flags": "",
+        "patterns": [
+          { "id": "openai", "source": "(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_\\-]{20,}(?![A-Za-z0-9])" },
+          { "id": "github", "source": "(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36}(?![A-Za-z0-9])" },
+          { "id": "stripe_secret", "source": "(?<![A-Za-z0-9])(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}(?![A-Za-z0-9])" }
+        ],
+        "examples": {
+          "match": [
+            "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+            "sk-proj-Zx8Q1pLm9aQvR2tYwB7nK4sDefgh"
+          ],
+          "nomatch": ["sk-${OPENAI_API_KEY}", "ghp_short", "sk-...3ab", "pk_live_abcdefghijklmnopqrstuvwxyz"]
+        }
+      },
+      {
+        "id": "entity_bearer_token",
+        "category": "security.secret_leak.api_key",
+        "severity": "critical",
+        "tier": "strong",
+        "flags": "i",
+        "patterns": [
+          {
+            "id": "authorization_header",
+            "source": "(?<![A-Za-z0-9\\-])(?:proxy-)?authorization\\s*:\\s*(?:bearer|basic|token|apikey)\\s{1,4}(?!(?:\\*{3,}|x{3,}|\\$\\{|<|>|%[sd]|\\.{3,}|…|changeme|placeholder|redacted|your[_\\-]?password|your[_\\-]|example|token(?![A-Za-z0-9_])|secret(?![A-Za-z0-9_])|\\$))(?![A-Za-z0-9._~+/\\-]*(?:\\.{3,}|…))([A-Za-z0-9._~+/\\-]{12,}={0,2})"
+          }
+        ],
+        "group": 1,
+        "examples": {
+          "match": [
+            "curl -H \"Authorization: Bearer pk_cc7f7b3f73664638b8f30fe8ca598848\"",
+            "Proxy-Authorization: Basic dXNlcjpwYXNzd29yZDEyMw=="
+          ],
+          "nomatch": [
+            "Authorization: Bearer <YOUR_TOKEN>",
+            "Authorization: Bearer ${API_TOKEN}",
+            "Authorization: Bearer $TOKEN",
+            "Authorization: Bearer pk_cc7...8848",
+            "Authorization: Bearer xxxxxxxxxxxxxxxx"
+          ]
+        }
+      },
+      {
+        "id": "entity_aws_key_id",
+        "category": "security.secret_leak.cloud_credential",
+        "severity": "critical",
+        "tier": "strong",
+        "flags": "",
+        "patterns": [
+          { "id": "aws_access_key_id", "source": "(?<![A-Z0-9])(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA|AIPA)[A-Z0-9]{16}(?![A-Z0-9])" }
+        ],
+        "examples": {
+          "match": ["AKIAIOSFODNN7EXAMPLE", "key AROAJ6WCMLZ3PQ4G7DYX in"],
+          "nomatch": ["akiaiosfodnn7example", "AKIA1234", "XAKIAIOSFODNN7EXAMPLE"]
+        }
+      }
+    ]
+  },
+  "cases": {
+    "mask": [
+      {
+        "name": "an issuer-prefixed key is replaced by a numbered token and reported as rule/pattern",
+        "steps": ["use sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 now"],
+        "expect": [
+          { "text": "use ${OGR_SECRET_1} now", "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_api_key/openai" }] }
+        ],
+        "values": { "${OGR_SECRET_1}": "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789" }
+      },
+      {
+        "name": "a group names the span: the credential goes, the header stays",
+        "steps": ["curl -H \"Authorization: Bearer pk_cc7f7b3f73664638b8f30fe8ca598848\" https://api.example.com"],
+        "expect": [
+          {
+            "text": "curl -H \"Authorization: Bearer ${OGR_SECRET_1}\" https://api.example.com",
+            "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_bearer_token/authorization_header" }]
+          }
+        ]
+      },
+      {
+        "name": "a value is stable across steps; only new values are minted",
+        "steps": [
+          "key AKIAIOSFODNN7EXAMPLE",
+          "again AKIAIOSFODNN7EXAMPLE and sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
+          "AKIAIOSFODNN7EXAMPLE"
+        ],
+        "expect": [
+          { "text": "key ${OGR_SECRET_1}", "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_aws_key_id/aws_access_key_id" }] },
+          { "text": "again ${OGR_SECRET_1} and ${OGR_SECRET_2}", "minted": [{ "token": "${OGR_SECRET_2}", "rule": "entity_api_key/openai" }] },
+          { "text": "${OGR_SECRET_1}", "minted": [] }
+        ],
+        "values": {
+          "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE",
+          "${OGR_SECRET_2}": "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+        }
+      },
+      {
+        "name": "nothing is ever matched inside an existing placeholder",
+        "steps": ["token ${OGR_SECRET_9} and ${OGR_PHONE_2} stay; AKIAIOSFODNN7EXAMPLE goes"],
+        "expect": [
+          {
+            "text": "token ${OGR_SECRET_9} and ${OGR_PHONE_2} stay; ${OGR_SECRET_1} goes",
+            "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_aws_key_id/aws_access_key_id" }]
+          }
+        ]
+      },
+      {
+        "name": "a value split by a zero-width space is still one value, and the splice removes the splitter",
+        "steps": ["AKIAIOSFODNN7\u200bEXAMPLE", "AKIAIOSFODNN7EXAMPLE"],
+        "expect": [
+          { "text": "${OGR_SECRET_1}", "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_aws_key_id/aws_access_key_id" }] },
+          { "text": "${OGR_SECRET_1}", "minted": [] }
+        ],
+        "values": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" }
+      },
+      {
+        "name": "overlap: longest wins — the bearer group's longer span beats the exact-length github key",
+        "steps": ["Authorization: Bearer ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij.extra"],
+        "expect": [
+          {
+            "text": "Authorization: Bearer ${OGR_SECRET_1}",
+            "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_bearer_token/authorization_header" }]
+          }
+        ],
+        "values": { "${OGR_SECRET_1}": "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij.extra" }
+      },
+      {
+        "name": "overlap: equal length falls to served order — api_key is listed before bearer_token",
+        "steps": ["Authorization: Bearer sk-proj-Zx8Q1pLm9aQvR2tYwB7nK4sDefgh"],
+        "expect": [
+          {
+            "text": "Authorization: Bearer ${OGR_SECRET_1}",
+            "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_api_key/openai" }]
+          }
+        ]
+      },
+      {
+        "name": "a known value is replaced wherever it recurs, even where no rule would match it",
+        "steps": ["sk-proj-Zx8Q1pLm9aQvR2tYwB7nK4sDefgh", "prefix-sk-proj-Zx8Q1pLm9aQvR2tYwB7nK4sDefghsuffix"],
+        "expect": [
+          { "text": "${OGR_SECRET_1}", "minted": [{ "token": "${OGR_SECRET_1}", "rule": "entity_api_key/openai" }] },
+          { "text": "prefix-${OGR_SECRET_1}suffix", "minted": [] }
+        ]
+      },
+      {
+        "name": "two values in one text are numbered left to right",
+        "steps": ["a=AKIAIOSFODNN7EXAMPLE b=AROAJ6WCMLZ3PQ4G7DYX"],
+        "expect": [
+          {
+            "text": "a=${OGR_SECRET_1} b=${OGR_SECRET_2}",
+            "minted": [
+              { "token": "${OGR_SECRET_1}", "rule": "entity_aws_key_id/aws_access_key_id" },
+              { "token": "${OGR_SECRET_2}", "rule": "entity_aws_key_id/aws_access_key_id" }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "a nomatch example shape is left alone",
+        "steps": ["Authorization: Bearer ${API_TOKEN} and pk_live_abcdefghijklmnopqrstuvwxyz"],
+        "expect": [{ "text": "Authorization: Bearer ${API_TOKEN} and pk_live_abcdefghijklmnopqrstuvwxyz", "minted": [] }]
+      }
+    ],
+    "restore": [
+      {
+        "name": "a whole token restores",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "aws s3 ls --key ${OGR_SECRET_1} --region us-east-1",
+        "expect": { "text": "aws s3 ls --key AKIAIOSFODNN7EXAMPLE --region us-east-1", "unresolved": [] }
+      },
+      {
+        "name": "a markdown-escaped token restores",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "key=${OGR\\_SECRET\\_1}",
+        "expect": { "text": "key=AKIAIOSFODNN7EXAMPLE", "unresolved": [] }
+      },
+      {
+        "name": "a fully escaped token restores",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "\\$\\{OGR\\_SECRET\\_1\\}",
+        "expect": { "text": "AKIAIOSFODNN7EXAMPLE", "unresolved": [] }
+      },
+      {
+        "name": "a token this session never issued is reported, never guessed",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "curl -H 'Authorization: Bearer ${OGR_SECRET_7}'",
+        "expect": { "text": "curl -H 'Authorization: Bearer ${OGR_SECRET_7}'", "unresolved": ["${OGR_SECRET_7}"] }
+      },
+      {
+        "name": "no prefix matching: ${OGR_SECRET_12} is not ${OGR_SECRET_1}",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "${OGR_SECRET_12}",
+        "expect": { "text": "${OGR_SECRET_12}", "unresolved": ["${OGR_SECRET_12}"] }
+      },
+      {
+        "name": "the overflow placeholder is by construction unresolved",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "${OGR_SECRET_X}",
+        "expect": { "text": "${OGR_SECRET_X}", "unresolved": ["${OGR_SECRET_X}"] }
+      },
+      {
+        "name": "an escaped unresolved token is reported in its bare form",
+        "map": {},
+        "input": "${OGR\\_SECRET\\_3}",
+        "expect": { "text": "${OGR\\_SECRET\\_3}", "unresolved": ["${OGR_SECRET_3}"] }
+      },
+      {
+        "name": "a backslash before a non-escapable character is literal, so C:\\name never opens a token",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "input": "C:\\name and ${OGR_SECRET_1}",
+        "expect": { "text": "C:\\name and AKIAIOSFODNN7EXAMPLE", "unresolved": [] }
+      },
+      {
+        "name": "several tokens, longest key first, each restored exactly once",
+        "map": { "${OGR_SECRET_1}": "one", "${OGR_SECRET_10}": "ten" },
+        "input": "${OGR_SECRET_10}/${OGR_SECRET_1}/${OGR_SECRET_10}",
+        "expect": { "text": "ten/one/ten", "unresolved": [] }
+      }
+    ],
+    "stream": [
+      {
+        "name": "a token split across three deltas restores once its last piece arrives; nothing is emitted early",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["aws --key ${OGR_SE", "CRET_1", "} ls"],
+        "expect": ["aws --key ", "", "AKIAIOSFODNN7EXAMPLE ls"],
+        "end": ""
+      },
+      {
+        "name": "a partial token at end of stream is text, delivered by the final flush",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["cost: $", "{OGR_SEC"],
+        "expect": ["cost: ", ""],
+        "end": "${OGR_SEC"
+      },
+      {
+        "name": "a token that completes inside one delta restores in that delta",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["key=${OGR_SECRET_1};"],
+        "expect": ["key=AKIAIOSFODNN7EXAMPLE;"],
+        "end": ""
+      },
+      {
+        "name": "longest key first across a delta boundary: ${OGR_SECRET_1 then 0} is token 10, not token 1 followed by 0",
+        "map": { "${OGR_SECRET_1}": "one", "${OGR_SECRET_10}": "ten" },
+        "deltas": ["${OGR_SECRET_1", "0}/${OGR_SECRET_1}"],
+        "expect": ["", "ten/one"],
+        "end": ""
+      },
+      {
+        "name": "a markdown-escaped token split at the escape restores",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["${OGR\\", "_SECRET\\_1}"],
+        "expect": ["", "AKIAIOSFODNN7EXAMPLE"],
+        "end": ""
+      },
+      {
+        "name": "a backslash before a non-escapable character never opens a token, streamed or not",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["C:\\", "name ${OGR_SECRET_1}"],
+        "expect": ["C:", "\\name AKIAIOSFODNN7EXAMPLE"],
+        "end": ""
+      },
+      {
+        "name": "a token this session never issued is passed through as text, never guessed",
+        "map": { "${OGR_SECRET_1}": "AKIAIOSFODNN7EXAMPLE" },
+        "deltas": ["${OGR_SECRET_", "7} and ${OGR_SECRET_1}"],
+        "expect": ["", "${OGR_SECRET_7} and AKIAIOSFODNN7EXAMPLE"],
+        "end": ""
+      }
+    ]
+  }
+}

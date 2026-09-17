@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenAFW</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#6b7280; --card:#fff; --line:#e5e7eb; --ok:#16a34a; --warn:#d97706; --bad:#dc2626; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1115; --fg:#e6e8eb; --muted:#9aa3ad; --card:#171a20; --line:#2a2f38; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 1000px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; display:flex; align-items:center; gap:10px; }
+  h1 .dot { width:10px; height:10px; border-radius:50%; background:var(--ok); display:inline-block; }
+  .sub { color: var(--muted); margin-bottom: 20px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom: 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .card .v { font-size:24px; font-weight:600; margin-top:2px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; }
+  table { width:100%; border-collapse: collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align: top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  tr:last-child td { border-bottom:0; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(127,127,127,.12); padding:1px 5px; border-radius:4px; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:999px; font-size:12px; background: rgba(37,99,235,.12); color: var(--accent); margin: 1px 2px 1px 0; }
+  .bad { color: var(--bad); } .warn { color: var(--warn); } .ok { color: var(--ok); }
+  .wrap { overflow-x:auto; }
+  .muted { color: var(--muted); }
+  button { font: inherit; padding: 4px 12px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button[disabled] { opacity: .45; cursor: default; border-color: var(--line); color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { opacity: .9; color: #fff; }
+  select { font: inherit; padding: 3px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot" id="dot"></span> OpenAFW <span class="muted" id="ver"></span></h1>
+  <div class="sub" id="sub">loading…</div>
+  <div id="pausebar" hidden style="background:rgba(220,38,38,.12);border:1px solid var(--bad);color:var(--bad);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-weight:600">PAUSED — requests pass through unmasked. <button onclick="setPause(false)" style="margin-left:10px">Resume protection</button></div>
+  <div style="margin:-8px 0 16px"><button id="pausebtn" onclick="setPause(true)" style="font-size:12px">Pause protection (debug)</button></div>
+
+  <div class="grid">
+    <div class="card"><div class="k">requests</div><div class="v" id="c_requests">–</div></div>
+    <div class="card"><div class="k">secrets masked</div><div class="v" id="c_minted">–</div></div>
+    <div class="card"><div class="k">restored</div><div class="v" id="c_restored">–</div></div>
+    <div class="card"><div class="k">unresolved</div><div class="v" id="c_unresolved">–</div></div>
+    <div class="card"><div class="k">known values</div><div class="v" id="c_map">–</div></div>
+  </div>
+
+  <h2>Agents <span class="muted" id="agents_hint"></span></h2>
+  <div class="wrap"><table id="agents"><thead><tr><th>agent</th><th>status</th><th>routes through</th><th></th></tr></thead><tbody></tbody></table></div>
+  <div id="agents_msg" class="muted" style="margin-top:8px"></div>
+
+  <h2>Activity <span class="muted">(placeholders and rule ids only — never values)</span></h2>
+  <div class="wrap"><table id="activity"><thead><tr><th>time</th><th>agent</th><th>model</th><th>status</th><th>masked</th><th>known</th><th>restored</th><th>guard</th><th>ms</th></tr></thead><tbody></tbody></table></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let busy = false;
+function renderAgents(data, listen) {
+  const prof = data.profiles || [];
+  $("agents_hint").textContent = prof.length ? "" : "(no provider profile yet — agents keep their own credentials and are still protected)";
+  $("agents").querySelector("tbody").innerHTML = data.agents.map(x => {
+    const on = x.protection === "protected";
+    const label = on ? "Protected" : (x.protection === "no_config" ? "Not installed" : "Not protected");
+    const cls = on ? "ok" : (x.protection === "no_config" ? "muted" : "warn");
+    const sel = prof.length && !on && x.automatable
+      ? `<select id="p_${esc(x.agent)}"><option value="">its own credentials</option>${prof.map(p => `<option value="${esc(p)}"${p === x.profile ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`
+      : (x.profile ? `<code>${esc(x.profile)}</code>` : `<span class=muted>its own credentials</span>`);
+    const btn = !x.automatable
+      ? `<button disabled title="set its base URL by hand">manual</button>`
+      : on ? `<button onclick="doProtect('${esc(x.agent)}', false)">Unprotect</button>`
+           : `<button class=primary onclick="doProtect('${esc(x.agent)}', true)">Protect</button>`;
+    return `<tr><td>${esc(x.name)}<div class=muted>${esc(x.note)}</div></td>
+      <td class="${cls}">${label}${x.config_path ? `<div class=muted><code>${esc(x.config_path)}</code></div>` : ""}</td>
+      <td>${sel}</td><td>${btn}</td></tr>`;
+  }).join("");
+}
+async function doProtect(agent, on) {
+  if (busy) return; busy = true;
+  const sel = $("p_" + agent);
+  const body = on ? { agent, profile: sel ? sel.value : "" } : { agent };
+  $("agents_msg").textContent = (on ? "Protecting " : "Restoring ") + agent + "…";
+  try {
+    const r = await fetch("/__afw/api/" + (on ? "protect" : "unprotect"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(r => r.json());
+    $("agents_msg").innerHTML = r.ok ? esc(r.message).replace(/\n/g, "<br>") : `<span class=bad>${esc(r.error)}</span>`;
+  } catch (e) { $("agents_msg").innerHTML = `<span class=bad>${esc(e)}</span>`; }
+  busy = false; refresh();
+}
+const guard = (g) => {
+  if (!g) return "";
+  const one = (d, label) => !d ? "" : `<div><span class=muted>${label}</span> <span class="${d.decision === "block" ? "bad" : "ok"}">${esc(d.decision)}${d.decision === "block" && !d.enforced ? " (not enforced)" : ""}</span>${d.findings.map(f => `<div class=bad>${esc(f)}</div>`).join("")}</div>`;
+  return one(g.request, "req") + one(g.response, "resp") + (g.unjudged ? `<div class=warn>unjudged (runtime unreachable)</div>` : "");
+};
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+async function setPause(p) { if (p && !confirm("Pause OpenAFW? Every request will reach the provider UNMASKED until you resume.")) return; await fetch("/__afw/api/pause", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paused: p }) }); refresh(); }
+async function refresh() {
+  try {
+    const [s, a, a2] = await Promise.all([
+      fetch("/__afw/api/status").then(r => r.json()),
+      fetch("/__afw/api/activity?limit=100").then(r => r.json()),
+      fetch("/__afw/api/agents").then(r => r.json()),
+    ]);
+    $("ver").textContent = "v" + s.version;
+    $("dot").style.background = s.paused ? "var(--bad)" : (s.ruleset.active > 0 ? "var(--ok)" : "var(--bad)");
+    $("pausebar").hidden = !s.paused; $("pausebtn").hidden = !!s.paused;
+    $("sub").innerHTML = `listening on <code>${esc(s.listen)}</code> · ruleset <code>${esc(s.ruleset.id)}</code> (${s.ruleset.active} rules, ${s.ruleset.disabled} disabled, ${esc(s.ruleset.source)}) · OpenGuardrails: ${s.ogr.connected ? `<span class="${s.ogr.healthy ? "ok" : "warn"}">${s.ogr.healthy ? "connected" : "unreachable, fail-open"}</span>` : "<span class=muted>not connected</span>"} · up ${Math.round(s.uptime_s/60)} min`;
+    for (const k of ["requests","minted","restored","unresolved"]) $("c_"+k).textContent = s.counters[k];
+    $("c_map").textContent = s.map_size;
+    renderAgents(a2, s.listen);
+    $("activity").querySelector("tbody").innerHTML = a.map(r => `<tr>
+      <td class=muted>${new Date(r.at).toLocaleTimeString()}</td>
+      <td>${esc(r.agent)}<div class=muted><code>${esc(r.protocol)}</code></div></td>
+      <td>${esc(r.model)}</td>
+      <td class="${r.status >= 400 ? "bad" : ""}">${r.status}${r.streamed ? " ⟶" : ""}${r.error ? `<div class=bad>${esc(r.error)}</div>` : ""}</td>
+      <td>${r.minted.map(m => `<span class=tag>${esc(m)}</span>`).join("")}<span class=muted>${r.tokens_in_context ? ` ${r.tokens_in_context} in context` : ""}</span></td>
+      <td>${r.known || ""}</td>
+      <td>${r.restored || ""}${r.unresolved.length ? `<div class=bad>unresolved: ${r.unresolved.map(esc).join(", ")}</div>` : ""}</td>
+      <td>${guard(r.ogr)}</td>
+      <td class=muted>${r.ms}</td></tr>`).join("") || `<tr><td colspan=9 class=muted>No requests yet.</td></tr>`;
+  } catch (e) { $("sub").textContent = "cannot reach openafw: " + e; }
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>

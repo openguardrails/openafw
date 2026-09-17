@@ -1,0 +1,20 @@
+[package]
+name = "openafw-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenAFW desktop shell: tray + window over the local firewall"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+openafw = { path = "../openafw" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking", "json"] }

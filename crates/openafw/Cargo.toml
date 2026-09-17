@@ -1,0 +1,37 @@
+[package]
+name = "openafw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenAFW: a local AI firewall for coding agents"
+
+[lib]
+name = "openafw"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openafw"
+path = "src/main.rs"
+
+[dependencies]
+afw-engine = { path = "../afw-engine" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["http1", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "json"] }
+futures-util = "0.3"
+async-stream = "0.3"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+aes-gcm = "0.10"
+rand = "0.8"
+hex = "0.4"
+sha2 = "0.10"
+dirs = "5"
+toml_edit = "0.22"
+json5 = "0.4"
+serde_yaml = "0.9"
